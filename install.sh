@@ -5,33 +5,6 @@ set -e
 # ============================================================
 # AIOTERMUX - AIOStreams Nightly Installer
 # ============================================================
-#
-# Instala:
-#   Termux
-#     └── proot-distro
-#           └── Ubuntu
-#                 └── Node.js 24
-#                       └── pnpm 11
-#                             └── AIOStreams Nightly
-#
-# O instalador:
-#   1. Prepara o Termux
-#   2. Instala Ubuntu via proot-distro
-#   3. Instala dependências do Ubuntu
-#   4. Instala Node.js 24
-#   5. Instala pnpm
-#   6. Clona AIOStreams
-#   7. Detecta automaticamente a última tag *-nightly
-#   8. Compila o AIOStreams
-#   9. Gera metadata Nightly
-#
-# ============================================================
-
-set +e
-
-# ------------------------------------------------------------
-# Configuração
-# ------------------------------------------------------------
 
 DISTRO="ubuntu"
 
@@ -41,41 +14,24 @@ AIO_DIR="/root/AIOStreams"
 NODE_MAJOR="24"
 PNPM_VERSION="11.0.8"
 
-LOG_FILE="$HOME/aio_install.log"
-
-# Porta padrão do AIOStreams
 AIO_PORT="3000"
 
-# ------------------------------------------------------------
-# Cores
-# ------------------------------------------------------------
+LOG_FILE="$HOME/aio_install.log"
+
+# ============================================================
+# CORES
+# ============================================================
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
-DIM='\033[2m'
 RESET='\033[0m'
-CLEAR_LINE='\033[K'
 
-# ------------------------------------------------------------
-# Funções
-# ------------------------------------------------------------
-
-banner() {
-    clear
-
-    echo -e "${CYAN}${BOLD}"
-    echo "=========================================="
-    echo "       AIOStreams Nightly Installer"
-    echo "=========================================="
-    echo -e "${RESET}"
-    echo
-    echo "  Termux → Ubuntu → Node.js ${NODE_MAJOR}"
-    echo "  AIOStreams → Nightly"
-    echo
-}
+# ============================================================
+# FUNÇÕES
+# ============================================================
 
 info() {
     echo -e "${CYAN}[*]${RESET} $1"
@@ -95,6 +51,8 @@ error() {
 
 die() {
     error "$1"
+    echo
+    echo "Log: $LOG_FILE"
     exit 1
 }
 
@@ -112,44 +70,55 @@ run() {
         echo
         echo "Últimas linhas do log:"
         echo "------------------------------------------"
-        tail -n 40 "$LOG_FILE"
+        tail -n 50 "$LOG_FILE"
         echo "------------------------------------------"
         exit 1
     fi
 }
 
-# ------------------------------------------------------------
-# Início
-# ------------------------------------------------------------
+# ============================================================
+# BANNER
+# ============================================================
 
-banner
+clear
 
-echo "Log:"
-echo "  $LOG_FILE"
+echo -e "${CYAN}${BOLD}"
+echo "=========================================="
+echo "       AIOStreams Nightly Installer"
+echo "=========================================="
+echo -e "${RESET}"
+
+echo
+echo "AIOStreams:"
+echo "  $AIO_REPO"
+echo
+echo "Ambiente:"
+echo "  Ubuntu / proot-distro"
+echo "  Node.js ${NODE_MAJOR}"
+echo "  pnpm ${PNPM_VERSION}"
 echo
 
-# ------------------------------------------------------------
-# Wake lock
-# ------------------------------------------------------------
+# ============================================================
+# VERIFICA TERMUX
+# ============================================================
+
+if [ ! -d "/data/data/com.termux" ]; then
+    die "Este script precisa ser executado dentro do Termux."
+fi
+
+# ============================================================
+# WAKE LOCK
+# ============================================================
 
 if command -v termux-wake-lock >/dev/null 2>&1; then
     termux-wake-lock
     trap 'termux-wake-unlock >/dev/null 2>&1' EXIT
 fi
 
-# ------------------------------------------------------------
-# Verificar Termux
-# ------------------------------------------------------------
+# ============================================================
+# PREPARAR TERMUX
+# ============================================================
 
-if [ ! -d "/data/data/com.termux" ]; then
-    die "Este script precisa ser executado dentro do Termux."
-fi
-
-# ------------------------------------------------------------
-# Preparar Termux
-# ------------------------------------------------------------
-
-echo
 echo -e "${BOLD}1. Preparando Termux${RESET}"
 
 run "Atualizando pacotes do Termux" \
@@ -167,26 +136,205 @@ run "Instalando dependências do Termux" \
         tar \
         gzip
 
-# ------------------------------------------------------------
-# Ubuntu
-# ------------------------------------------------------------
+# ============================================================
+# UBUNTU
+# ============================================================
 
 echo
-echo -e "${BOLD}2. Preparando Ubuntu${RESET}"
+echo -e "${BOLD}2. Verificando Ubuntu${RESET}"
 
 if proot-distro list 2>/dev/null | grep -q "^ubuntu"; then
-    info "Ubuntu já está disponível no proot-distro."
+
+    success "Ubuntu já está instalado."
+
 else
+
     run "Instalando Ubuntu" \
         proot-distro install ubuntu
+
 fi
 
-# ------------------------------------------------------------
-# Atualização do Ubuntu
-# ------------------------------------------------------------
+# ============================================================
+# VERIFICAR AIOSTREAMS EXISTENTE
+# ============================================================
 
 echo
-echo -e "${BOLD}3. Preparando ambiente Ubuntu${RESET}"
+echo -e "${BOLD}3. Verificando instalação existente${RESET}"
+
+AIO_EXISTS=0
+
+if proot-distro login "$DISTRO" -- bash -c \
+    "test -d '$AIO_DIR'"; then
+
+    AIO_EXISTS=1
+
+fi
+
+if [ "$AIO_EXISTS" = "1" ]; then
+
+    echo
+    echo -e "${YELLOW}${BOLD}"
+    echo "=========================================="
+    echo " AIOStreams já está instalado"
+    echo "=========================================="
+    echo -e "${RESET}"
+
+    echo
+    echo "Diretório encontrado:"
+    echo "  $AIO_DIR"
+    echo
+
+    EXISTING_VERSION=$(
+        proot-distro login "$DISTRO" -- bash -c "
+            cd '$AIO_DIR' 2>/dev/null &&
+            git describe --tags --always 2>/dev/null || echo desconhecida
+        " 2>/dev/null
+    )
+
+    echo "Versão encontrada:"
+    echo "  $EXISTING_VERSION"
+    echo
+
+    echo "Escolha uma opção:"
+    echo
+    echo "  [1] Atualizar a instalação existente para a Nightly"
+    echo "  [2] Remover AIOStreams e instalar novamente"
+    echo "  [3] Cancelar"
+    echo
+
+    read -r -p "Opção [1-3]: " OPTION
+
+    case "$OPTION" in
+
+        1)
+
+            echo
+            echo -e "${CYAN}Atualizando instalação existente...${RESET}"
+            echo
+
+            proot-distro login "$DISTRO" -- bash -c "
+                set -e
+
+                cd '$AIO_DIR'
+
+                git fetch origin --tags --prune
+
+                NIGHTLY_TAG=\$(git tag --list '*-nightly' --sort=-version:refname | head -n 1)
+
+                if [ -z \"\$NIGHTLY_TAG\" ]; then
+                    echo 'Nenhuma tag Nightly encontrada.'
+                    exit 1
+                fi
+
+                echo
+                echo \"Nightly selecionada: \$NIGHTLY_TAG\"
+
+                git checkout --force \"\$NIGHTLY_TAG\"
+
+                echo
+                echo 'Instalando dependências...'
+
+                pnpm install
+
+                echo
+                echo 'Compilando...'
+
+                pnpm run build
+
+                echo
+                echo 'Gerando metadata...'
+
+                pnpm run metadata --channel=nightly
+
+                echo
+                echo '=========================================='
+                echo ' Atualização concluída'
+                echo '=========================================='
+                echo
+                echo \"Tag:    \$(git describe --tags --always)\"
+                echo \"Commit: \$(git rev-parse --short HEAD)\"
+                echo
+            " 2>&1 | tee "$LOG_FILE"
+
+            echo
+            success "AIOStreams atualizado para Nightly."
+
+            echo
+            echo "Para iniciar:"
+            echo
+            echo "  proot-distro login ubuntu"
+            echo "  cd /root/AIOStreams"
+            echo "  pnpm start"
+            echo
+
+            exit 0
+            ;;
+
+        2)
+
+            echo
+            echo -e "${RED}${BOLD}"
+            echo "ATENÇÃO!"
+            echo -e "${RESET}"
+            echo "Somente o AIOStreams será removido."
+            echo
+            echo "O Ubuntu, Node.js e pnpm serão mantidos."
+            echo
+
+            read -r -p "Digite REMOVE para confirmar: " CONFIRM
+
+            if [ "$CONFIRM" != "REMOVE" ]; then
+                echo
+                warning "Operação cancelada."
+                exit 0
+            fi
+
+            echo
+            info "Parando processos do AIOStreams..."
+
+            proot-distro login "$DISTRO" -- bash -c '
+                pkill -f "AIOStreams" 2>/dev/null || true
+                pkill -f "node.*AIOStreams" 2>/dev/null || true
+                pkill -f "pnpm.*AIOStreams" 2>/dev/null || true
+            ' 2>/dev/null || true
+
+            success "Processos encerrados."
+
+            echo
+            info "Removendo instalação antiga..."
+
+            proot-distro login "$DISTRO" -- bash -c "
+                rm -rf '$AIO_DIR'
+            "
+
+            success "AIOStreams antigo removido."
+
+            ;;
+
+        3)
+
+            echo
+            warning "Instalação cancelada."
+            exit 0
+            ;;
+
+        *)
+
+            echo
+            error "Opção inválida."
+            exit 1
+            ;;
+
+    esac
+
+fi
+
+# ============================================================
+# PREPARAR UBUNTU
+# ============================================================
+
+echo
+echo -e "${BOLD}4. Preparando Ubuntu${RESET}"
 
 proot-distro login "$DISTRO" -- bash -c '
     export DEBIAN_FRONTEND=noninteractive
@@ -207,96 +355,111 @@ proot-distro login "$DISTRO" -- bash -c '
 
 if [ $? -ne 0 ]; then
     error "Falha ao preparar Ubuntu."
-    tail -n 50 "$LOG_FILE"
+    tail -n 60 "$LOG_FILE"
     exit 1
 fi
 
 success "Ubuntu preparado."
 
-# ------------------------------------------------------------
-# Node.js 24
-# ------------------------------------------------------------
+# ============================================================
+# NODE.JS
+# ============================================================
 
 echo
-echo -e "${BOLD}4. Instalando Node.js ${NODE_MAJOR}${RESET}"
+echo -e "${BOLD}5. Verificando Node.js ${NODE_MAJOR}${RESET}"
 
-proot-distro login "$DISTRO" -- bash -c "
-    export DEBIAN_FRONTEND=noninteractive
+NODE_OK=$(
+    proot-distro login "$DISTRO" -- bash -c '
+        node --version 2>/dev/null || true
+    ' 2>/dev/null
+)
 
-    apt-get update
+if echo "$NODE_OK" | grep -q "^v${NODE_MAJOR}\."; then
 
-    apt-get install -y ca-certificates curl gnupg
+    success "Node.js $NODE_OK já está instalado."
 
-    curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -
+else
 
-    apt-get install -y nodejs
+    info "Instalando Node.js ${NODE_MAJOR}..."
 
-    node --version
-    npm --version
-" >> "$LOG_FILE" 2>&1
+    proot-distro login "$DISTRO" -- bash -c "
+        export DEBIAN_FRONTEND=noninteractive
 
-if [ $? -ne 0 ]; then
-    error "Falha ao instalar Node.js ${NODE_MAJOR}."
-    tail -n 60 "$LOG_FILE"
-    exit 1
+        apt-get update
+
+        apt-get install -y ca-certificates curl gnupg
+
+        curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -
+
+        apt-get install -y nodejs
+
+        node --version
+        npm --version
+    " >> "$LOG_FILE" 2>&1
+
+    if [ $? -ne 0 ]; then
+        error "Falha ao instalar Node.js."
+        tail -n 80 "$LOG_FILE"
+        exit 1
+    fi
+
+    success "Node.js instalado."
+
 fi
 
-success "Node.js ${NODE_MAJOR} instalado."
-
-# ------------------------------------------------------------
-# pnpm
-# ------------------------------------------------------------
+# ============================================================
+# PNPM
+# ============================================================
 
 echo
-echo -e "${BOLD}5. Instalando pnpm ${PNPM_VERSION}${RESET}"
+echo -e "${BOLD}6. Verificando pnpm${RESET}"
 
-proot-distro login "$DISTRO" -- bash -c "
-    npm install -g pnpm@${PNPM_VERSION}
+PNPM_OK=$(
+    proot-distro login "$DISTRO" -- bash -c '
+        pnpm --version 2>/dev/null || true
+    ' 2>/dev/null
+)
 
-    pnpm --version
-" >> "$LOG_FILE" 2>&1
+if [ "$PNPM_OK" = "$PNPM_VERSION" ]; then
 
-if [ $? -ne 0 ]; then
-    error "Falha ao instalar pnpm."
-    tail -n 50 "$LOG_FILE"
-    exit 1
+    success "pnpm ${PNPM_VERSION} já está instalado."
+
+else
+
+    info "Instalando pnpm ${PNPM_VERSION}..."
+
+    proot-distro login "$DISTRO" -- bash -c "
+        npm install -g pnpm@${PNPM_VERSION}
+        pnpm --version
+    " >> "$LOG_FILE" 2>&1
+
+    if [ $? -ne 0 ]; then
+        error "Falha ao instalar pnpm."
+        tail -n 60 "$LOG_FILE"
+        exit 1
+    fi
+
+    success "pnpm instalado."
+
 fi
 
-success "pnpm ${PNPM_VERSION} instalado."
-
-# ------------------------------------------------------------
-# Git / AIOStreams
-# ------------------------------------------------------------
+# ============================================================
+# CLONAR AIOSTREAMS
+# ============================================================
 
 echo
-echo -e "${BOLD}6. Instalando AIOStreams${RESET}"
+echo -e "${BOLD}7. Baixando AIOStreams Nightly${RESET}"
 
 proot-distro login "$DISTRO" -- bash -c "
     set -e
 
-    if [ -d '${AIO_DIR}/.git' ]; then
-        echo 'AIOStreams já existe. Atualizando repositório...'
+    rm -rf '$AIO_DIR'
 
-        cd '${AIO_DIR}'
-
-        git fetch --all --tags --prune
-
-    else
-        echo 'Clonando AIOStreams...'
-
-        rm -rf '${AIO_DIR}'
-
-        git clone --filter=blob:none --no-checkout '${AIO_REPO}' '${AIO_DIR}'
-
-        cd '${AIO_DIR}'
-
-        git fetch --tags
-    fi
+    git clone --filter=blob:none '${AIO_REPO}' '${AIO_DIR}'
 
     cd '${AIO_DIR}'
 
-    echo
-    echo 'Buscando última tag Nightly...'
+    git fetch --tags
 
     NIGHTLY_TAG=\$(git tag --list '*-nightly' --sort=-version:refname | head -n 1)
 
@@ -311,28 +474,24 @@ proot-distro login "$DISTRO" -- bash -c "
     git checkout --force \"\$NIGHTLY_TAG\"
 
     echo
-    echo 'Commit:'
-    git rev-parse --short HEAD
-
-    echo
-    echo 'Tag:'
-    git describe --tags --always
+    echo \"Commit: \$(git rev-parse --short HEAD)\"
+    echo \"Tag:    \$(git describe --tags --always)\"
 " >> "$LOG_FILE" 2>&1
 
 if [ $? -ne 0 ]; then
-    error "Falha ao baixar/selecionar AIOStreams Nightly."
-    tail -n 80 "$LOG_FILE"
+    error "Falha ao baixar AIOStreams."
+    tail -n 100 "$LOG_FILE"
     exit 1
 fi
 
-success "AIOStreams Nightly selecionado."
+success "AIOStreams Nightly baixado."
 
-# ------------------------------------------------------------
-# Dependências
-# ------------------------------------------------------------
+# ============================================================
+# DEPENDÊNCIAS
+# ============================================================
 
 echo
-echo -e "${BOLD}7. Instalando dependências do AIOStreams${RESET}"
+echo -e "${BOLD}8. Instalando dependências${RESET}"
 
 proot-distro login "$DISTRO" -- bash -c "
     set -e
@@ -350,12 +509,12 @@ fi
 
 success "Dependências instaladas."
 
-# ------------------------------------------------------------
-# Build
-# ------------------------------------------------------------
+# ============================================================
+# BUILD
+# ============================================================
 
 echo
-echo -e "${BOLD}8. Compilando AIOStreams${RESET}"
+echo -e "${BOLD}9. Compilando AIOStreams${RESET}"
 
 proot-distro login "$DISTRO" -- bash -c "
     set -e
@@ -373,12 +532,12 @@ fi
 
 success "Build concluído."
 
-# ------------------------------------------------------------
-# Metadata Nightly
-# ------------------------------------------------------------
+# ============================================================
+# METADATA
+# ============================================================
 
 echo
-echo -e "${BOLD}9. Gerando metadata Nightly${RESET}"
+echo -e "${BOLD}10. Gerando metadata Nightly${RESET}"
 
 proot-distro login "$DISTRO" -- bash -c "
     set -e
@@ -389,41 +548,38 @@ proot-distro login "$DISTRO" -- bash -c "
 " >> "$LOG_FILE" 2>&1
 
 if [ $? -ne 0 ]; then
-    error "Falha ao gerar metadata Nightly."
+    error "Falha ao gerar metadata."
     tail -n 80 "$LOG_FILE"
     exit 1
 fi
 
-success "Metadata Nightly gerado."
+success "Metadata gerado."
 
-# ------------------------------------------------------------
-# Informações da instalação
-# ------------------------------------------------------------
+# ============================================================
+# VERIFICAÇÃO
+# ============================================================
 
 echo
-echo -e "${BOLD}10. Verificando instalação${RESET}"
+echo -e "${BOLD}11. Verificando instalação${RESET}"
 
 proot-distro login "$DISTRO" -- bash -c "
     cd '${AIO_DIR}'
 
     echo
     echo '=========================================='
-    echo ' AIOStreams instalado'
+    echo ' AIOStreams'
     echo '=========================================='
     echo
-    echo \"Node: \$(node --version)\"
-    echo \"pnpm: \$(pnpm --version)\"
-    echo \"Tag:  \$(git describe --tags --always)\"
+    echo \"Node:   \$(node --version)\"
+    echo \"pnpm:   \$(pnpm --version)\"
+    echo \"Tag:    \$(git describe --tags --always)\"
     echo \"Commit: \$(git rev-parse --short HEAD)\"
-    echo
-    echo 'Diretório: ${AIO_DIR}'
-    echo 'Porta: ${AIO_PORT}'
     echo
 "
 
-# ------------------------------------------------------------
-# Final
-# ------------------------------------------------------------
+# ============================================================
+# FINAL
+# ============================================================
 
 echo
 echo -e "${GREEN}${BOLD}"
@@ -433,29 +589,23 @@ echo "=========================================="
 echo -e "${RESET}"
 
 echo
-echo -e "${BOLD}Para entrar no Ubuntu:${RESET}"
+echo "Para entrar no Ubuntu:"
 echo
 echo "  proot-distro login ubuntu"
 echo
 
-echo -e "${BOLD}Para iniciar o AIOStreams:${RESET}"
+echo "Para iniciar:"
 echo
 echo "  cd /root/AIOStreams"
 echo "  pnpm start"
 echo
 
-echo -e "${BOLD}Acesso local:${RESET}"
+echo "Para atualizar posteriormente:"
 echo
-echo "  http://127.0.0.1:${AIO_PORT}/stremio/configure"
-echo
-
-echo -e "${BOLD}Para verificar a versão instalada:${RESET}"
-echo
-echo "  cd /root/AIOStreams"
-echo "  git describe --tags --always"
+echo "  ./update.sh"
 echo
 
-echo -e "${BOLD}Para ver o log da instalação:${RESET}"
+echo "Log:"
 echo
 echo "  cat ~/aio_install.log"
 echo
