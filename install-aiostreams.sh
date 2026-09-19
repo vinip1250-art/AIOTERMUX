@@ -1,28 +1,54 @@
 #!/data/data/com.termux/files/usr/bin/bash
+
 set -e
 
-BACKUP_PATH="/sdcard/Download/aiostreams-ubuntu-v2.tar.gz"
-BACKUP_URL="https://github.com/powerboxizm/AIOTERMUX/releases/download/v1.0/aiostreams-ubuntu-v2.tar.gz"
+# ============================================================
+# AIOTERMUX - AIOStreams Nightly Installer
+# ============================================================
+#
+# Instala:
+#   Termux
+#     └── proot-distro
+#           └── Ubuntu
+#                 └── Node.js 24
+#                       └── pnpm 11
+#                             └── AIOStreams Nightly
+#
+# O instalador:
+#   1. Prepara o Termux
+#   2. Instala Ubuntu via proot-distro
+#   3. Instala dependências do Ubuntu
+#   4. Instala Node.js 24
+#   5. Instala pnpm
+#   6. Clona AIOStreams
+#   7. Detecta automaticamente a última tag *-nightly
+#   8. Compila o AIOStreams
+#   9. Gera metadata Nightly
+#
+# ============================================================
+
+set +e
+
+# ------------------------------------------------------------
+# Configuração
+# ------------------------------------------------------------
+
+DISTRO="ubuntu"
+
+AIO_REPO="https://github.com/Viren070/AIOStreams.git"
+AIO_DIR="/root/AIOStreams"
+
+NODE_MAJOR="24"
+PNPM_VERSION="11.0.8"
+
 LOG_FILE="$HOME/aio_install.log"
-TOTAL_STEPS=7
-STEP=0
 
-# -- Resume support --
-# STATE_FILE remembers the last fully-completed step so re-running the
-# script after it gets interrupted skips finished work instead of
-# starting over.
-STATE_FILE="$HOME/.aio_install_state"
-RESUME_STEP=0
-[ -f "$STATE_FILE" ] && RESUME_STEP=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
-case "$RESUME_STEP" in ''|*[!0-9]*) RESUME_STEP=0 ;; esac
+# Porta padrão do AIOStreams
+AIO_PORT="3000"
 
-mark_step_done() {
-  echo "$1" > "$STATE_FILE"
-}
-
-step_already_done() {
-  [ "$1" -le "$RESUME_STEP" ]
-}
+# ------------------------------------------------------------
+# Cores
+# ------------------------------------------------------------
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -33,237 +59,453 @@ DIM='\033[2m'
 RESET='\033[0m'
 CLEAR_LINE='\033[K'
 
-# Bash-builtin sleep replacement. Avoids depending on the external
-# `sleep` binary, which can transiently vanish mid-upgrade if the
-# coreutils package (which provides it) is being reinstalled while
-# this spinner is still running in the background.
-tsleep() {
-  if command -v sleep >/dev/null 2>&1; then
-    sleep "$1" 2>/dev/null && return 0
-  fi
-  # Fallback only if the real `sleep` binary is unavailable. This
-  # busy-reads /dev/zero one byte at a time (bash reads non-seekable
-  # input byte-by-byte), which is CPU-heavy - avoid it when possible.
-  read -rt "$1" -N 999999 < /dev/zero 2>/dev/null
-  return 0
-}
-export -f tsleep
-
-export DEBIAN_FRONTEND=noninteractive
-
-term_width() {
-  local w
-  w=$(tput cols 2>/dev/null || echo 40)
-  echo "$w"
-}
+# ------------------------------------------------------------
+# Funções
+# ------------------------------------------------------------
 
 banner() {
-  echo -e "${CYAN}${BOLD}"
-  echo "  ================================"
-  echo "      AIOStreams Installer"
-  echo "  ================================"
-  echo -e "${RESET}"
+    clear
+
+    echo -e "${CYAN}${BOLD}"
+    echo "=========================================="
+    echo "       AIOStreams Nightly Installer"
+    echo "=========================================="
+    echo -e "${RESET}"
+    echo
+    echo "  Termux → Ubuntu → Node.js ${NODE_MAJOR}"
+    echo "  AIOStreams → Nightly"
+    echo
 }
 
-progress_bar() {
-  local percent=$(( STEP * 100 / TOTAL_STEPS ))
-  local width=20
-  local filled=$(( percent * width / 100 ))
-  local empty=$(( width - filled ))
-  local bar
-  bar=$(printf "%${filled}s" | tr ' ' '#')
-  local rest
-  rest=$(printf "%${empty}s" | tr ' ' '-')
-  printf "  ${DIM}[%s%s] %d%%${RESET}\n" "$bar" "$rest" "$percent"
+info() {
+    echo -e "${CYAN}[*]${RESET} $1"
 }
 
-step_header() {
-  STEP=$((STEP+1))
-  echo ""
-  printf "${BOLD}Step %d/%d${RESET} - %s\n" "$STEP" "$TOTAL_STEPS" "$1"
+success() {
+    echo -e "${GREEN}[OK]${RESET} $1"
 }
 
-fit_msg() {
-  local msg="$1"
-  local reserve=10
-  local maxw=$(( $(term_width) - reserve ))
-  if [ "$maxw" -lt 10 ]; then maxw=10; fi
-  if [ "${#msg}" -gt "$maxw" ]; then
-    echo "${msg:0:$((maxw-3))}..."
-  else
-    echo "$msg"
-  fi
+warning() {
+    echo -e "${YELLOW}[!]${RESET} $1"
 }
 
-spinner() {
-  local pid=$1
-  local msg
-  msg=$(fit_msg "$2")
-  local spin='|/-\'
-  local i=0
-  local elapsed=0
-  local tick=0
-  while kill -0 "$pid" 2>/dev/null; do
-    i=$(( (i+1) % ${#spin} ))
-    tick=$((tick+1))
-    if [ $((tick % 7)) -eq 0 ]; then elapsed=$((elapsed+1)); fi
-    printf "\r${CLEAR_LINE}  ${CYAN}%s${RESET} %s (%ds)" "${spin:$i:1}" "$msg" "$elapsed"
-    tsleep 0.15
-  done
+error() {
+    echo -e "${RED}[ERRO]${RESET} $1"
+}
+
+die() {
+    error "$1"
+    exit 1
 }
 
 run() {
-  local msg="$1"
-  local cmd="$2"
-  bash -c "$cmd" > "$LOG_FILE" 2>&1 &
-  local pid=$!
-  spinner "$pid" "$msg"
-  wait "$pid"
-  local status=$?
-  local shown
-  shown=$(fit_msg "$msg")
-  if [ $status -eq 0 ]; then
-    printf "\r${CLEAR_LINE}  ${GREEN}OK${RESET}  %s\n" "$shown"
-  else
-    printf "\r${CLEAR_LINE}  ${RED}FAIL${RESET} %s\n" "$shown"
-    echo -e "${RED}--- Error output ---${RESET}"
-    tail -n 25 "$LOG_FILE"
-    exit 1
-  fi
-  progress_bar
-}
+    local description="$1"
+    shift
 
-# run_quiet: no background process/spinner. Used for repair steps that
-# must work even if sleep/basic binaries are currently broken.
-run_quiet() {
-  local msg="$1"
-  local cmd="$2"
-  local allow_fail="${3:-0}"
-  local shown
-  shown=$(fit_msg "$msg")
-  printf "  ${CYAN}...${RESET} %s" "$shown"
-  if bash -c "$cmd" > "$LOG_FILE" 2>&1; then
-    printf "\r${CLEAR_LINE}  ${GREEN}OK${RESET}  %s\n" "$shown"
-  else
-    if [ "$allow_fail" = "1" ]; then
-      printf "\r${CLEAR_LINE}  ${YELLOW}SKIP${RESET} %s\n" "$shown"
+    echo
+    info "$description"
+
+    if "$@" >> "$LOG_FILE" 2>&1; then
+        success "$description"
     else
-      printf "\r${CLEAR_LINE}  ${RED}FAIL${RESET} %s\n" "$shown"
-      echo -e "${RED}--- Error output ---${RESET}"
-      tail -n 25 "$LOG_FILE"
-      exit 1
+        error "$description"
+        echo
+        echo "Últimas linhas do log:"
+        echo "------------------------------------------"
+        tail -n 40 "$LOG_FILE"
+        echo "------------------------------------------"
+        exit 1
     fi
-  fi
 }
 
-clear
+# ------------------------------------------------------------
+# Início
+# ------------------------------------------------------------
+
 banner
 
-# Prevent Android/Termux from suspending or getting killed by OEM
-# battery management while this runs unattended (this is the most
-# likely cause of the process dying silently mid-step with no error).
+echo "Log:"
+echo "  $LOG_FILE"
+echo
+
+# ------------------------------------------------------------
+# Wake lock
+# ------------------------------------------------------------
+
 if command -v termux-wake-lock >/dev/null 2>&1; then
-  termux-wake-lock
-  trap 'termux-wake-unlock >/dev/null 2>&1' EXIT
+    termux-wake-lock
+    trap 'termux-wake-unlock >/dev/null 2>&1' EXIT
 fi
 
-# -- Step 1: repair Termux base before doing anything else --
-# Fixes "CANNOT LINK EXECUTABLE ... library X not found" errors caused
-# by an interrupted upgrade leaving core packages in a broken state.
-# Reinstalls every known-problematic shared library explicitly, then
-# does a generic broken-package repair pass as a catch-all.
-step_header "Repairing Termux base packages"
-if step_already_done 1; then
-  printf "  ${GREEN}OK${RESET}  Already completed (resumed)\n"
+# ------------------------------------------------------------
+# Verificar Termux
+# ------------------------------------------------------------
+
+if [ ! -d "/data/data/com.termux" ]; then
+    die "Este script precisa ser executado dentro do Termux."
+fi
+
+# ------------------------------------------------------------
+# Preparar Termux
+# ------------------------------------------------------------
+
+echo
+echo -e "${BOLD}1. Preparando Termux${RESET}"
+
+run "Atualizando pacotes do Termux" \
+    pkg update -y
+
+run "Atualizando pacotes instalados" \
+    pkg upgrade -y
+
+run "Instalando dependências do Termux" \
+    pkg install -y \
+        proot-distro \
+        curl \
+        git \
+        wget \
+        tar \
+        gzip
+
+# ------------------------------------------------------------
+# Ubuntu
+# ------------------------------------------------------------
+
+echo
+echo -e "${BOLD}2. Preparando Ubuntu${RESET}"
+
+if proot-distro list 2>/dev/null | grep -q "^ubuntu"; then
+    info "Ubuntu já está disponível no proot-distro."
 else
-  run_quiet "Refreshing package index" "pkg update -y" 0
-  run_quiet "Reconfiguring pending packages" "dpkg --configure -a" 1
-  run_quiet "Reinstalling libpcre2" "pkg install -y pcre2" 1
-  run_quiet "Reinstalling libgmp" "pkg install -y libgmp" 1
-  run_quiet "Reinstalling libandroid-selinux" "pkg install -y libandroid-selinux" 1
-  run_quiet "Reinstalling termux-tools" "pkg install -y --reinstall termux-tools" 1
-  run_quiet "Fixing broken package state" "apt --fix-broken install -y" 1
-  run_quiet "Verifying core tools work" "tsleep 0.1 && echo ok" 0
-  mark_step_done 1
-fi
-progress_bar
-
-# -- Step 2: prerequisites --
-step_header "Installing prerequisites"
-if step_already_done 2; then
-  printf "  ${GREEN}OK${RESET}  Already completed (resumed)\n"
-else
-  run "Installing proot-distro" "pkg install -y proot-distro"
-  mark_step_done 2
+    run "Instalando Ubuntu" \
+        proot-distro install ubuntu
 fi
 
-# -- Step 3: storage access --
-step_header "Requesting storage access"
-termux-setup-storage
-printf "  ${YELLOW}!${RESET} Waiting for storage permission...\n"
+# ------------------------------------------------------------
+# Atualização do Ubuntu
+# ------------------------------------------------------------
 
-WAIT_SECS=0
-until [ -d ~/storage/shared ] || [ "$WAIT_SECS" -ge 60 ]; do
-  printf "\r${CLEAR_LINE}  ${CYAN}...${RESET} Waiting (%ds)" "$WAIT_SECS"
-  tsleep 1
-  WAIT_SECS=$((WAIT_SECS+1))
-done
-echo ""
+echo
+echo -e "${BOLD}3. Preparando ambiente Ubuntu${RESET}"
 
-if [ -d ~/storage/shared ]; then
-  printf "  ${GREEN}OK${RESET}  Storage permission granted\n"
-else
-  printf "  ${RED}FAIL${RESET} No permission after 60s\n"
-  echo "     Grant it manually, then rerun this script."
-  exit 1
-fi
-progress_bar
+proot-distro login "$DISTRO" -- bash -c '
+    export DEBIAN_FRONTEND=noninteractive
 
-# -- Step 4: locate & verify backup --
-step_header "Locating backup file"
-if [ -f "$BACKUP_PATH" ]; then
-  printf "  ${GREEN}OK${RESET}  Found backup file locally\n"
-else
-  printf "  ${YELLOW}!${RESET} Backup not found locally, downloading...\n"
-  mkdir -p "$(dirname "$BACKUP_PATH")"
-  run "Downloading backup from GitHub" "curl -fL --retry 3 -o '$BACKUP_PATH' '$BACKUP_URL'"
-fi
-run "Verifying archive integrity" "gzip -t '$BACKUP_PATH'"
+    apt-get update
 
-# -- Step 5: copy & restore --
-step_header "Restoring AIOStreams container"
-if step_already_done 5; then
-  printf "  ${GREEN}OK${RESET}  Already completed (resumed)\n"
-else
-  run "Copying backup to Termux storage" "cp '$BACKUP_PATH' ~/aio-restore-temp.tar.gz"
-  run "Restoring Ubuntu container" "proot-distro restore ~/aio-restore-temp.tar.gz"
-  mark_step_done 5
+    apt-get install -y \
+        ca-certificates \
+        curl \
+        wget \
+        git \
+        build-essential \
+        python3 \
+        make \
+        g++ \
+        pkg-config
+' >> "$LOG_FILE" 2>&1
+
+if [ $? -ne 0 ]; then
+    error "Falha ao preparar Ubuntu."
+    tail -n 50 "$LOG_FILE"
+    exit 1
 fi
 
-# -- Step 6: cleanup --
-step_header "Cleaning up unnecessary files"
-run "Removing temp backup copy" "rm -f ~/aio-restore-temp.tar.gz"
-run "Pruning pnpm store" "proot-distro login ubuntu -- bash -c 'rm -rf /root/.local/share/pnpm/store'"
-run "Clearing apt cache" "proot-distro login ubuntu -- bash -c 'apt clean && rm -rf /var/lib/apt/lists/*'"
-run "Clearing npm cache" "proot-distro login ubuntu -- bash -c 'npm cache clean --force'"
-run "Removing old logs" "proot-distro login ubuntu -- bash -c 'rm -f /root/AIOStreams/install.log /root/AIOStreams/build-*.log'"
+success "Ubuntu preparado."
 
-# -- Step 7: verify --
-step_header "Verifying installation"
-run "Checking project files" "proot-distro login ubuntu -- bash -c 'test -f /root/AIOStreams/package.json'"
-run "Checking Node.js" "proot-distro login ubuntu -- bash -c 'node -v'"
-run "Checking pnpm" "proot-distro login ubuntu -- bash -c 'pnpm -v'"
+# ------------------------------------------------------------
+# Node.js 24
+# ------------------------------------------------------------
 
-rm -f "$STATE_FILE"
+echo
+echo -e "${BOLD}4. Instalando Node.js ${NODE_MAJOR}${RESET}"
 
-echo ""
-echo -e "${GREEN}${BOLD}  Installation complete!${RESET}"
-echo ""
-echo -e "  ${BOLD}To start AIOStreams:${RESET}"
-echo "    proot-distro login ubuntu"
-echo "    cd /root/AIOStreams && pnpm start"
-echo ""
-echo -e "  ${BOLD}To expose it (separate session):${RESET}"
-echo "    proot-distro login ubuntu"
-echo "    cloudflared tunnel run <your-tunnel-name>"
-echo ""
+proot-distro login "$DISTRO" -- bash -c "
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+
+    apt-get install -y ca-certificates curl gnupg
+
+    curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -
+
+    apt-get install -y nodejs
+
+    node --version
+    npm --version
+" >> "$LOG_FILE" 2>&1
+
+if [ $? -ne 0 ]; then
+    error "Falha ao instalar Node.js ${NODE_MAJOR}."
+    tail -n 60 "$LOG_FILE"
+    exit 1
+fi
+
+success "Node.js ${NODE_MAJOR} instalado."
+
+# ------------------------------------------------------------
+# pnpm
+# ------------------------------------------------------------
+
+echo
+echo -e "${BOLD}5. Instalando pnpm ${PNPM_VERSION}${RESET}"
+
+proot-distro login "$DISTRO" -- bash -c "
+    npm install -g pnpm@${PNPM_VERSION}
+
+    pnpm --version
+" >> "$LOG_FILE" 2>&1
+
+if [ $? -ne 0 ]; then
+    error "Falha ao instalar pnpm."
+    tail -n 50 "$LOG_FILE"
+    exit 1
+fi
+
+success "pnpm ${PNPM_VERSION} instalado."
+
+# ------------------------------------------------------------
+# Git / AIOStreams
+# ------------------------------------------------------------
+
+echo
+echo -e "${BOLD}6. Instalando AIOStreams${RESET}"
+
+proot-distro login "$DISTRO" -- bash -c "
+    set -e
+
+    if [ -d '${AIO_DIR}/.git' ]; then
+        echo 'AIOStreams já existe. Atualizando repositório...'
+
+        cd '${AIO_DIR}'
+
+        git fetch --all --tags --prune
+
+    else
+        echo 'Clonando AIOStreams...'
+
+        rm -rf '${AIO_DIR}'
+
+        git clone --filter=blob:none --no-checkout '${AIO_REPO}' '${AIO_DIR}'
+
+        cd '${AIO_DIR}'
+
+        git fetch --tags
+    fi
+
+    cd '${AIO_DIR}'
+
+    echo
+    echo 'Buscando última tag Nightly...'
+
+    NIGHTLY_TAG=\$(git tag --list '*-nightly' --sort=-version:refname | head -n 1)
+
+    if [ -z \"\$NIGHTLY_TAG\" ]; then
+        echo 'ERRO: nenhuma tag Nightly encontrada.'
+        exit 1
+    fi
+
+    echo
+    echo \"Nightly selecionada: \$NIGHTLY_TAG\"
+
+    git checkout --force \"\$NIGHTLY_TAG\"
+
+    echo
+    echo 'Commit:'
+    git rev-parse --short HEAD
+
+    echo
+    echo 'Tag:'
+    git describe --tags --always
+" >> "$LOG_FILE" 2>&1
+
+if [ $? -ne 0 ]; then
+    error "Falha ao baixar/selecionar AIOStreams Nightly."
+    tail -n 80 "$LOG_FILE"
+    exit 1
+fi
+
+success "AIOStreams Nightly selecionado."
+
+# ------------------------------------------------------------
+# Dependências
+# ------------------------------------------------------------
+
+echo
+echo -e "${BOLD}7. Instalando dependências do AIOStreams${RESET}"
+
+proot-distro login "$DISTRO" -- bash -c "
+    set -e
+
+    cd '${AIO_DIR}'
+
+    pnpm install
+" >> "$LOG_FILE" 2>&1
+
+if [ $? -ne 0 ]; then
+    error "Falha no pnpm install."
+    tail -n 100 "$LOG_FILE"
+    exit 1
+fi
+
+success "Dependências instaladas."
+
+# ------------------------------------------------------------
+# Build
+# ------------------------------------------------------------
+
+echo
+echo -e "${BOLD}8. Compilando AIOStreams${RESET}"
+
+proot-distro login "$DISTRO" -- bash -c "
+    set -e
+
+    cd '${AIO_DIR}'
+
+    pnpm run build
+" >> "$LOG_FILE" 2>&1
+
+if [ $? -ne 0 ]; then
+    error "Falha no build."
+    tail -n 120 "$LOG_FILE"
+    exit 1
+fi
+
+success "Build concluído."
+
+# ------------------------------------------------------------
+# Metadata Nightly
+# ------------------------------------------------------------
+
+echo
+echo -e "${BOLD}9. Gerando metadata Nightly${RESET}"
+
+proot-distro login "$DISTRO" -- bash -c "
+    set -e
+
+    cd '${AIO_DIR}'
+
+    pnpm run metadata --channel=nightly
+" >> "$LOG_FILE" 2>&1
+
+if [ $? -ne 0 ]; then
+    error "Falha ao gerar metadata Nightly."
+    tail -n 80 "$LOG_FILE"
+    exit 1
+fi
+
+success "Metadata Nightly gerado."
+
+# ------------------------------------------------------------
+# Informações da instalação
+# ------------------------------------------------------------
+
+echo
+echo -e "${BOLD}10. Verificando instalação${RESET}"
+
+proot-distro login "$DISTRO" -- bash -c "
+    cd '${AIO_DIR}'
+
+    echo
+    echo '=========================================='
+    echo ' AIOStreams instalado'
+    echo '=========================================='
+    echo
+    echo \"Node: \$(node --version)\"
+    echo \"pnpm: \$(pnpm --version)\"
+    echo \"Tag:  \$(git describe --tags --always)\"
+    echo \"Commit: \$(git rev-parse --short HEAD)\"
+    echo
+    echo 'Diretório: ${AIO_DIR}'
+    echo 'Porta: ${AIO_PORT}'
+    echo
+"
+
+# ------------------------------------------------------------
+# Final
+# ------------------------------------------------------------
+
+echo
+echo -e "${GREEN}${BOLD}"
+echo "=========================================="
+echo "       INSTALAÇÃO CONCLUÍDA"
+echo "=========================================="
+echo -e "${RESET}"
+
+echo
+echo -e "${BOLD}Para entrar no Ubuntu:${RESET}"
+echo
+echo "  proot-distro login ubuntu"
+echo
+
+echo -e "${BOLD}Para iniciar o AIOStreams:${RESET}"
+echo
+echo "  cd /root/AIOStreams"
+echo "  pnpm start"
+echo
+
+echo -e "${BOLD}Acesso local:${RESET}"
+echo
+echo "  http://127.0.0.1:${AIO_PORT}/stremio/configure"
+echo
+
+echo -e "${BOLD}Para verificar a versão instalada:${RESET}"
+echo
+echo "  cd /root/AIOStreams"
+echo "  git describe --tags --always"
+echo
+
+echo -e "${BOLD}Para ver o log da instalação:${RESET}"
+echo
+echo "  cat ~/aio_install.log"
+echo
+
+O que mudou em relação ao AIOTERMUX original
+
+O seu script antigo fazia:
+
+GitHub Release
+     ↓
+aiostreams-ubuntu-v2.tar.gz
+     ↓
+proot-distro restore
+     ↓
+AIOStreams já pré-instalado
+
+O novo faz:
+
+GitHub
+  ↓
+proot-distro Ubuntu
+  ↓
+Node.js 24
+  ↓
+pnpm 11
+  ↓
+git clone AIOStreams
+  ↓
+última tag *-nightly
+  ↓
+pnpm install
+  ↓
+pnpm build
+  ↓
+pnpm run metadata --channel=nightly
+  ↓
+pnpm start
+
+A documentação oficial confirma que a instalação "from source" usa exatamente a sequência de instalação/build/metadata/start acima.
+
+Além disso, as Nightlies são realmente publicadas como tags datadas, por exemplo "2026.09.18.2336-nightly", e a release aponta para um commit específico ("a766f36"). O script não fixa esse número: ele procura automaticamente a maior tag "*-nightly", então seu repositório não ficará preso à Nightly de hoje.
+
+Estrutura que eu usaria no seu GitHub
+
+AIOTERMUX/
+├── README.md
+├── install.sh
+├── update.sh
+└── uninstall.sh
+
+Eu faria o "install.sh" acima como instalação inicial e criaria um "update.sh" separado para atualizar somente o AIOStreams para a próxima Nightly, sem reinstalar Ubuntu, Node ou todas as dependências. Isso é particularmente útil porque a Nightly é atualizada a cada commit.
+
+Também vale observar que a imagem Docker oficial atualmente é multi-arquitetura ("linux/amd64" e "linux/arm64"), mas no seu caso não precisamos dela: o script compila diretamente dentro do Ubuntu do Termux.
