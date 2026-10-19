@@ -29,12 +29,47 @@ A primeira instalação também prepara a distribuição Ubuntu, instala as ferr
 
 No Termux, execute:
 
+Execute **um bloco por vez**, aguardando cada comando terminar antes de executar o próximo.
+
+**1. Atualize os pacotes do Termux:**
+
 ```bash
 pkg update -y && pkg upgrade -y
+```
+
+**2. Instale o Git:**
+
+```bash
 pkg install -y git
+```
+
+**3. Baixe o repositório:**
+
+```bash
 git clone https://github.com/vinip1250-art/AIOTERMUX.git
+```
+
+Se a pasta `AIOTERMUX` já existir, entre nela em vez de clonar novamente:
+
+```bash
+cd ~/AIOTERMUX
+```
+
+Se acabou de clonar o repositório, entre na pasta:
+
+```bash
 cd AIOTERMUX
+```
+
+**4. Dê permissão de execução aos scripts:**
+
+```bash
 chmod +x install.sh update.sh uninstall.sh
+```
+
+**5. Inicie a instalação:**
+
+```bash
 ./install.sh
 ```
 
@@ -71,7 +106,18 @@ Consulte também a [documentação oficial das variáveis de ambiente do AIOStre
 
 ## Iniciar
 
-Depois de configurar o `.env`, execute no Termux:
+O comando depende de onde você está executando:
+
+**Se você já está dentro do Ubuntu/PRoot**, como no passo a passo em que o prompt aparece como `root@localhost`, execute:
+
+```bash
+cd /root/aiostreams
+./start.sh
+```
+
+Não execute `proot-distro login ubuntu` novamente dentro dessa sessão: isso tenta iniciar um PRoot dentro de outro e gera o erro `attempted to run proot-distro in a proot session`.
+
+**Se você está no Termux, fora do Ubuntu**, execute:
 
 ```bash
 proot-distro login ubuntu -- /root/aiostreams/start.sh
